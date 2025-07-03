@@ -3,148 +3,149 @@
 import time
 import requests
 import socket
+import logging
 from gpiozero import PWMLED, PWMOutputDevice
 
-# ----- Configuration -----
+# ----- Logging Configuration -----
+logging.basicConfig(
+    filename="/home/pi/rnbo-motor-project/autorun-log.txt",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
-# Delay on startup to ensure RNBO has initialized (in seconds)
-STARTUP_DELAY = 5
-
-# GPIO pin for the motor (must support PWM)
-MOTOR_PIN = 5
-
-# GPIO pins for the LEDs (must support PWM)
-LED_PINS = [18, 19, 20]
-
-# RNBO OSCQuery server settings
-HOSTNAME = socket.gethostname() + ".local"
+# ----- RNBO OSCQuery Configuration -----
 PORT = 5678
-TARGET_PATH_SUFFIX = "/messages/out/output1"
+TARGET_PATH_BASE = "/rnbo/inst/{}/messages/out/output1"
+HOSTNAME = socket.gethostname() + ".local"
 
-# ----- Resolve Pi's mDNS hostname to IP -----
+# ----- GPIO Pin Setup -----
+MOTOR_PIN = 5
+LED_PINS = [26, 19, 13]
 
-try:
-    ip = socket.gethostbyname(HOSTNAME)
-    OSCQUERY_URL = f"http://{ip}:{PORT}"
-except socket.gaierror:
-    print(f"Could not resolve hostname '{HOSTNAME}'. Check network or mDNS setup.")
-    exit(1)
+# ----- Helper Functions -----
 
-# ----- OSCQuery Utilities -----
-
-def fetch_full_tree():
-    """Get the full parameter tree from the RNBO OSCQuery device."""
+def resolve_hostname():
+    """Resolve Pi's hostname to IP address for OSCQuery."""
     try:
-        response = requests.get(OSCQUERY_URL, timeout=2)
+        ip = socket.gethostbyname(HOSTNAME)
+        return f"http://{ip}:{PORT}"
+    except socket.gaierror:
+        logging.error(f"Could not resolve hostname '{HOSTNAME}'. Check your network or mDNS.")
+        return None
+
+def fetch_full_tree(url):
+    """Fetch the full parameter tree from the RNBO OSCQuery server."""
+    try:
+        response = requests.get(url, timeout=2)
         if response.status_code == 200:
             return response.json()
         else:
-            print(f"Failed to fetch tree. Status code: {response.status_code}")
+            logging.warning(f"Failed to fetch JSON, status code: {response.status_code}")
     except Exception as e:
-        print(f"Exception fetching tree: {e}")
+        logging.warning(f"Exception during tree fetch: {e}")
     return None
 
 def search_tree_for_value(tree, target_path):
-    """Search the tree recursively for a node with the exact FULL_PATH."""
+    """Recursively search the tree for a given path and return its value."""
     if not isinstance(tree, dict):
         return None
 
     if tree.get("FULL_PATH") == target_path:
         val = tree.get("value") or tree.get("VALUE")
-        if isinstance(val, list) and len(val) > 0:
-            return val[0]
-        return val
+        return val[0] if isinstance(val, list) and len(val) > 0 else val
 
-    for child in (tree.get("CONTENTS") or {}).values():
+    children = tree.get("CONTENTS") or {}
+    for child in children.values():
         result = search_tree_for_value(child, target_path)
         if result is not None:
             return result
-
     return None
 
-def find_output_path(tree, suffix):
-    """Search tree for any FULL_PATH that ends with the given suffix."""
-    if not isinstance(tree, dict):
-        return None
+def get_parameter_value(url, path):
+    """Top-level method to retrieve RNBO parameter value."""
+    tree = fetch_full_tree(url)
+    return search_tree_for_value(tree, path) if tree else None
 
-    full_path = tree.get("FULL_PATH")
-    if full_path and full_path.endswith(suffix):
-        return full_path
+def get_dynamic_output_path(url, timeout=15):
+    """Wait for the RNBO device to be ready and return the correct output path."""
+    start = time.time()
+    blink = True
 
-    for child in (tree.get("CONTENTS") or {}).values():
-        result = find_output_path(child, suffix)
-        if result:
-            return result
-
-    return None
-
-def get_dynamic_output_path():
-    """Get the full RNBO path for output1 dynamically (e.g., inst/0 or inst/1)."""
-    tree = fetch_full_tree()
-    if not tree:
-        print("Unable to fetch tree to find dynamic path.")
-        return None
-    return find_output_path(tree, TARGET_PATH_SUFFIX)
-
-def get_parameter_value_from_path(path):
-    """Fetch the current value of a parameter at the given path."""
-    tree = fetch_full_tree()
-    if tree:
-        return search_tree_for_value(tree, path)
-    return None
-
-# ----- Main Logic -----
-
-def main():
-    print(f"Waiting {STARTUP_DELAY}s to allow RNBO to fully start...")
-    time.sleep(STARTUP_DELAY)
-
-    # Dynamically find correct RNBO output path
-    output_path = get_dynamic_output_path()
-    if not output_path:
-        print("Could not find RNBO output path.")
-        return
-
-    print(f"Using dynamic RNBO path: {output_path}")
-
-    # Initialize GPIO devices
-    motor = PWMOutputDevice(MOTOR_PIN)
     leds = [PWMLED(pin) for pin in LED_PINS]
 
-    print(f"Polling value from {OSCQUERY_URL}{output_path}...")
-
     try:
-        while True:
-            # Get current value from RNBO patch
-            val = get_parameter_value_from_path(output_path)
+        while time.time() - start < timeout:
+            for led in leds:
+                led.value = 1.0 if blink else 0.0
+            blink = not blink
+            time.sleep(0.5)
 
-            if val is not None:
-                try:
-                    duty_cycle = float(val)
-                    duty_cycle = max(0, min(100, duty_cycle))
-                    pwm_value = duty_cycle / 100.0
+            tree = fetch_full_tree(url)
+            if not tree:
+                continue
 
-                    # Set motor and LED brightness
-                    motor.value = pwm_value
+            for i in range(2):  # Try /inst/0 and /inst/1
+                path = TARGET_PATH_BASE.format(i)
+                val = search_tree_for_value(tree, path)
+                if val is not None:
                     for led in leds:
-                        led.value = pwm_value
-
-                    print(f"Motor & LEDs set to {duty_cycle:.1f}%")
-                except (ValueError, TypeError):
-                    print(f"Invalid value: {val}")
-            else:
-                print("Failed to get RNBO value.")
-
-            time.sleep(1)
+                        led.off()
+                    logging.info(f"Found RNBO output at path: {path}")
+                    return path
 
     finally:
-        # Stop everything on exit
-        print("Shutting down...")
-        motor.off()
         for led in leds:
             led.off()
 
-# ----- Start Script -----
+    logging.error("Timeout waiting for RNBO to start.")
+    return None
+
+# ----- Main Application Logic -----
+
+def main():
+    motor = PWMOutputDevice(MOTOR_PIN)
+    leds = [PWMLED(pin) for pin in LED_PINS]
+
+    oscquery_url = resolve_hostname()
+    if not oscquery_url:
+        return
+
+    output_path = get_dynamic_output_path(oscquery_url)
+    if not output_path:
+        logging.error("Could not determine output path. Exiting.")
+        return
+
+    logging.info(f"Polling RNBO value at '{output_path}' from {oscquery_url}")
+
+    try:
+        while True:
+            val = get_parameter_value(oscquery_url, output_path)
+
+            if val is not None:
+                try:
+                    duty = max(0, min(100, float(val)))  # Clamp 0–100
+                    pwm = duty / 100.0
+                    motor.value = pwm
+                    for led in leds:
+                        led.value = pwm
+                    logging.info(f"Set motor & LEDs to {duty:.1f}%")
+                except (ValueError, TypeError):
+                    logging.warning(f"Invalid value received: {val}")
+            else:
+                logging.warning("Failed to get RNBO value.")
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user. Shutting down...")
+
+    finally:
+        motor.off()
+        for led in leds:
+            led.off()
+        logging.info("Motor and LEDs turned off. Exiting.")
+
+# ----- Entry Point -----
 
 if __name__ == "__main__":
     main()
