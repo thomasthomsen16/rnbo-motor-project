@@ -4,7 +4,7 @@ import socket
 from gpiozero import PWMOutputDevice
 
 # RNBO OSCQuery Config
-HOSTNAME = "tt16.local"      # Hostname of your RNBO device (using mDNS)
+HOSTNAME = socket.gethostname() + ".local"  # Hostname of your Pi (using mDNS).
 PORT = 5678                  # Port RNBO service listens on
 TARGET_PATH = "/rnbo/inst/1/messages/out/output1"  # Path to the parameter we want
 
