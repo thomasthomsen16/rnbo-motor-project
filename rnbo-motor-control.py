@@ -6,7 +6,7 @@ from gpiozero import PWMOutputDevice
 # RNBO OSCQuery Config
 HOSTNAME = "tt16.local"      # Hostname of your RNBO device (using mDNS)
 PORT = 5678                  # Port RNBO service listens on
-TARGET_PATH = "/rnbo/inst/0/messages/out/output1"  # Path to the parameter we want
+TARGET_PATH = "/rnbo/inst/1/messages/out/output1"  # Path to the parameter we want
 
 try:
     # Resolve hostname to IP address
@@ -75,10 +75,10 @@ def main():
     try:
         while True:
             # UNCOMMENT the next line to test with a fake motor value (for example, 75%)
-            val = 75
+            #val = 75
 
             # COMMENT OUT the next line if you are using a test value instead
-            # val = get_parameter_value()
+            val = get_parameter_value()
 
             if val is not None:
                 try:
