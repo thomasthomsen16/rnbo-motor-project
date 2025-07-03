@@ -1,133 +1,150 @@
+#!/usr/bin/env python3
+
 import time
 import requests
 import socket
 from gpiozero import PWMLED, PWMOutputDevice
 
-# ----- RNBO OSCQuery Configuration -----
+# ----- Configuration -----
 
-# The hostname of the Pi (resolved using mDNS). This lets us avoid hardcoding the IP address.
+# Delay on startup to ensure RNBO has initialized (in seconds)
+STARTUP_DELAY = 5
+
+# GPIO pin for the motor (must support PWM)
+MOTOR_PIN = 5
+
+# GPIO pins for the LEDs (must support PWM)
+LED_PINS = [18, 19, 20]
+
+# RNBO OSCQuery server settings
 HOSTNAME = socket.gethostname() + ".local"
-
-# Port used by the RNBO OSCQuery server (usually 5678)
 PORT = 5678
+TARGET_PATH_SUFFIX = "/messages/out/output1"
 
-# The exact path in the RNBO patch from which we want to read the output value
-TARGET_PATH = "/rnbo/inst/1/messages/out/output1"
+# ----- Resolve Pi's mDNS hostname to IP -----
 
-# Try to resolve the hostname to an IP address
 try:
     ip = socket.gethostbyname(HOSTNAME)
     OSCQUERY_URL = f"http://{ip}:{PORT}"
 except socket.gaierror:
-    print("Could not resolve hostname '{}'. Check your network or mDNS setup.".format(HOSTNAME))
+    print(f"Could not resolve hostname '{HOSTNAME}'. Check network or mDNS setup.")
     exit(1)
 
-# ----- GPIO Pin Setup -----
-
-# Pin connected to motor control (PWM capable)
-MOTOR_PIN = 5
-
-# Pins connected to the LEDs (must also support PWM)
-LED_PINS = [18, 19, 20]
-
-# ----- Functions for OSCQuery -----
+# ----- OSCQuery Utilities -----
 
 def fetch_full_tree():
-    """
-    Contact the RNBO device and request the full parameter tree as JSON.
-    This tree includes all the controllable/observable parameters in the patch.
-    """
+    """Get the full parameter tree from the RNBO OSCQuery device."""
     try:
         response = requests.get(OSCQUERY_URL, timeout=2)
         if response.status_code == 200:
             return response.json()
         else:
-            print("Failed to get root JSON, status code: {}".format(response.status_code))
-            return None
+            print(f"Failed to fetch tree. Status code: {response.status_code}")
     except Exception as e:
-        print("Exception during root fetch: {}".format(e))
-        return None
+        print(f"Exception fetching tree: {e}")
+    return None
 
 def search_tree_for_value(tree, target_path):
-    """
-    Recursively search the parameter tree to find the node at the given target_path.
-    If found, return the value. Handles both flat values and lists.
-    """
+    """Search the tree recursively for a node with the exact FULL_PATH."""
     if not isinstance(tree, dict):
         return None
 
     if tree.get("FULL_PATH") == target_path:
         val = tree.get("value") or tree.get("VALUE")
         if isinstance(val, list) and len(val) > 0:
-            return val[0]  # Return first value if it's a list
+            return val[0]
         return val
 
-    # Check child nodes recursively
-    children = tree.get("CONTENTS") or {}
-    for child_node in children.values():
-        result = search_tree_for_value(child_node, target_path)
+    for child in (tree.get("CONTENTS") or {}).values():
+        result = search_tree_for_value(child, target_path)
         if result is not None:
             return result
 
-    return None  # Not found
-
-def get_parameter_value():
-    """
-    Top-level function to get the current value of the parameter we're interested in.
-    It fetches the full tree, then searches it for our target path.
-    """
-    tree = fetch_full_tree()
-    if tree:
-        return search_tree_for_value(tree, TARGET_PATH)
     return None
 
-# ----- Main Application Logic -----
+def find_output_path(tree, suffix):
+    """Search tree for any FULL_PATH that ends with the given suffix."""
+    if not isinstance(tree, dict):
+        return None
+
+    full_path = tree.get("FULL_PATH")
+    if full_path and full_path.endswith(suffix):
+        return full_path
+
+    for child in (tree.get("CONTENTS") or {}).values():
+        result = find_output_path(child, suffix)
+        if result:
+            return result
+
+    return None
+
+def get_dynamic_output_path():
+    """Get the full RNBO path for output1 dynamically (e.g., inst/0 or inst/1)."""
+    tree = fetch_full_tree()
+    if not tree:
+        print("Unable to fetch tree to find dynamic path.")
+        return None
+    return find_output_path(tree, TARGET_PATH_SUFFIX)
+
+def get_parameter_value_from_path(path):
+    """Fetch the current value of a parameter at the given path."""
+    tree = fetch_full_tree()
+    if tree:
+        return search_tree_for_value(tree, path)
+    return None
+
+# ----- Main Logic -----
 
 def main():
-    # Set up the motor as a PWM output device
-    motor = PWMOutputDevice(MOTOR_PIN)
+    print(f"Waiting {STARTUP_DELAY}s to allow RNBO to fully start...")
+    time.sleep(STARTUP_DELAY)
 
-    # Set up multiple PWM-enabled LEDs
+    # Dynamically find correct RNBO output path
+    output_path = get_dynamic_output_path()
+    if not output_path:
+        print("Could not find RNBO output path.")
+        return
+
+    print(f"Using dynamic RNBO path: {output_path}")
+
+    # Initialize GPIO devices
+    motor = PWMOutputDevice(MOTOR_PIN)
     leds = [PWMLED(pin) for pin in LED_PINS]
 
-    print("Polling RNBO value at '{}' from {} to control motor and LEDs...".format(TARGET_PATH, OSCQUERY_URL))
+    print(f"Polling value from {OSCQUERY_URL}{output_path}...")
 
     try:
         while True:
-            # If testing without RNBO, use this:
-            # val = 75
-
-            # Otherwise, get live value from RNBO
-            val = get_parameter_value()
+            # Get current value from RNBO patch
+            val = get_parameter_value_from_path(output_path)
 
             if val is not None:
                 try:
-                    # Convert to float and clamp between 0 and 100
                     duty_cycle = float(val)
                     duty_cycle = max(0, min(100, duty_cycle))
-
-                    # Scale to 0.0–1.0 for PWM
                     pwm_value = duty_cycle / 100.0
 
-                    # Set motor speed and LED brightness
+                    # Set motor and LED brightness
                     motor.value = pwm_value
                     for led in leds:
                         led.value = pwm_value
 
-                    print("Motor & LEDs set to {:.1f}%".format(duty_cycle))
+                    print(f"Motor & LEDs set to {duty_cycle:.1f}%")
                 except (ValueError, TypeError):
-                    print("Invalid value received: {}".format(val))
+                    print(f"Invalid value: {val}")
             else:
-                print("Failed to get value.")
+                print("Failed to get RNBO value.")
 
-            time.sleep(1)  # Wait before polling again
+            time.sleep(1)
+
     finally:
-        # On exit: turn everything off
+        # Stop everything on exit
+        print("Shutting down...")
         motor.off()
         for led in leds:
             led.off()
-        print("Motor and LEDs off. Exiting.")
 
-# Start the program
+# ----- Start Script -----
+
 if __name__ == "__main__":
     main()
