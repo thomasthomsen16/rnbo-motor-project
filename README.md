@@ -10,7 +10,9 @@ The main part is Raspberry Pi hooked up to jrf mic for picking up sounds from th
 
 The repository contains the following:
 - rnbo-motor-control.py: This script polls an RNBO patch via OSCQuery for a parameter value and uses it to control a DC motor and three LEDs on a Raspberry Pi. The output value (0–100) sets the PWM duty cycle for both motor speed and LED brightness.
-- Crontab: Controls the starup of the Pi.
+- crontab.txt: Controls the starup of the Pi.
 - Max patch: Include the RNBO code needed for exporting to the Pi and manipulating the sound from the jrf mic
 
 The Pi needs to run a custom image created by Cycling74 for it to be able to run the RNBO code. Instructions on how to get this custom image and working with Raspberry Pi + RNBO can be found here: https://rnbo.cycling74.com/learn/raspberry-pi-setup
+
+A license for Max MSP and RNBO is needed to push the RNBO code to the Pi. See more at https://cycling74.com/
