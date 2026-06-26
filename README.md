@@ -289,3 +289,4 @@ crontab ~/crontab.txt
 - **GPIO:** motor on pin 5, LEDs on pins 26 / 19 / 13
 - **RNBO output path:** `/rnbo/inst/0/messages/out/output1`
 - **OSCQuery port:** 5678
+- **Link to RNBO editor (assuming the IP adress was set to 192.168.1.80): http://192.168.1.80:3000/.
