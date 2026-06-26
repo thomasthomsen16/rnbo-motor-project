@@ -111,6 +111,7 @@ hostname -I
 
 - The Pi compiles the patch to native code via the runner, so just export your
   patch to it from Max's export sidebar.
+- The RNBO can also be uploaded via the RNBO web interface (198.168.1.80:3000) instead. Just use the .rnbopack and upload under "Manage Resources" --> "Patchers" --> "Upload"
 - If the Pi doesn't appear automatically in the sidebar, zeroconf/mDNS discovery
   often doesn't work over a direct ethernet link. Use **+ add** and enter the
   Pi's IP manually. The runner listens on port **5678**.
